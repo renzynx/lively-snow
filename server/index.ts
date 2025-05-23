@@ -37,6 +37,7 @@ app.register(fastifySession, {
     maxAge: 7 * 24 * 60 * 60, // 1 day
     sameSite: true,
     httpOnly: true,
+    domain: process.env.DOMAIN,
   },
   store: new DrizzleStore(db),
 });
