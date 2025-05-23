@@ -22,7 +22,7 @@ const __dirname = dirname(__filename);
 
 sourceMapSupport.install();
 
-const app = fastify();
+const app = fastify({ trustProxy: true });
 
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
