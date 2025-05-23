@@ -4,3 +4,10 @@ node_modules
 /build
 /public/build
 server/index.js
+uploads/
+.env*
+!.env.example
+*.sqlite
+*.db
+dist/
+.yarn

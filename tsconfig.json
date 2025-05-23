@@ -9,7 +9,7 @@
     "**/.client/**/*.tsx"
   ],
   "compilerOptions": {
-    "types": ["@remix-run/node", "vite/client"],
+    // "types": ["@remix-run/node", "vite/client"],
     "jsx": "react-jsx",
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",

@@ -4,6 +4,7 @@
   "include": ["./server/**/*.ts"],
   "exclude": ["node_modules"],
   "compilerOptions": {
+    "typeRoots": ["./server/types/fastify.d.ts"],
     "noEmit": false,
     "outDir": "./server"
   }
