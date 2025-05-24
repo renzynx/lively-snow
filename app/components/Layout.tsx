@@ -254,23 +254,6 @@ export function Layout({ children }: LayoutProps) {
 
       {/* Main content */}
       <main className="flex-1">{children}</main>
-
-      {/* Footer */}
-      <footer className="border-t bg-muted/50">
-        <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
-          <div className="flex flex-col items-center justify-center space-y-4">
-            <div className="flex items-center space-x-2">
-              <div className="h-6 w-6 rounded-md bg-primary flex items-center justify-center">
-                <FileText className="h-4 w-4 text-primary-foreground" />
-              </div>
-              <span className="font-semibold">FileManager</span>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              Secure file management made simple
-            </p>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }

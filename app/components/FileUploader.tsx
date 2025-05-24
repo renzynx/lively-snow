@@ -1,6 +1,4 @@
-import { AlertCircle, CheckCircle2, Upload, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "~/components/ui/button";
 import {
   Card,
   CardContent,
@@ -8,44 +6,29 @@ import {
   CardHeader,
   CardTitle,
 } from "~/components/ui/card";
-import { Input } from "~/components/ui/input";
-import { Progress } from "~/components/ui/progress";
-import { RingProgress } from "~/components/ui/ring-progress";
-import { formatFileSize, formatTimeRemaining } from "~/lib/utils";
-import { ScrollArea } from "./ui/scroll-area";
-
-// Define the status type for the upload
-type UploadStatus =
-  | "idle"
-  | "initiating"
-  | "uploading"
-  | "finalizing"
-  | "completed"
-  | "error";
-
-// Define a type for file upload entry
-type FileUploadEntry = {
-  id: string;
-  file: File;
-  status: UploadStatus;
-  progress: number;
-  error?: string;
-  uploadId?: string;
-  speed: number; // Speed in KB/s
-  timeRemaining: string;
-  result?: any;
-};
+import { DropZone } from "./upload/DropZone";
+import { FileList } from "./upload/FileList";
+import { UploaderControls } from "./upload/UploaderControls";
+import { type FileUploadEntry } from "./upload/FileListItem";
+import {
+  preFetchPresignedUrls,
+  calculateUploadStats,
+  createFileId,
+  validateFile,
+} from "~/lib/utils";
 
 export interface FileUploaderProps {
   maxSizeInMB?: number;
   chunkSizeInMB?: number;
   allowedFileTypes?: string[];
   initiateUrl?: string;
-  uploadUrl?: string;
-  finalizeUrl?: string;
+  presignedUrl?: string;
+  completeUrl?: string;
+  abortUrl?: string;
   title?: string;
   description?: string;
   maxConcurrentUploads?: number;
+  currentFolderId?: string | null;
 }
 
 export function FileUploader({
@@ -53,21 +36,31 @@ export function FileUploader({
   chunkSizeInMB = 5, // Default chunk size of 5MB
   allowedFileTypes,
   initiateUrl = "/api/upload/initiate",
-  uploadUrl = "/api/upload",
-  finalizeUrl = "/api/upload/finalize",
+  presignedUrl = "/api/upload/presigned-url",
+  completeUrl = "/api/upload/complete",
+  abortUrl = "/api/upload/abort",
   title = "Upload Files",
   description,
   maxConcurrentUploads = 3,
+  currentFolderId = null,
 }: FileUploaderProps) {
   const [files, setFiles] = useState<FileUploadEntry[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  // Pre-fetching optimization state
+  const [presignedUrlCache, setPresignedUrlCache] = useState<
+    Map<string, string>
+  >(new Map());
+  const [urlFetchPromises, setUrlFetchPromises] = useState<
+    Map<string, Promise<string>>
+  >(new Map());
 
   // Refs to manage upload state
   const xhrRefs = useRef<Map<string, XMLHttpRequest>>(new Map());
   const pendingUploadsRef = useRef<string[]>([]);
   const activeUploadsCountRef = useRef<number>(0);
   const uploadStartTimeRefs = useRef<Map<string, number>>(new Map());
-  const lastLoadedRefs = useRef<Map<string, number>>(new Map());
   const speedUpdateIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(
     new Map(),
   );
@@ -75,285 +68,246 @@ export function FileUploader({
   // Convert chunk size to bytes
   const chunkSizeInBytes = chunkSizeInMB * 1024 * 1024;
 
-  // Helper function to update file status
-  const updateFileStatus = useCallback(
-    (fileId: string, status: UploadStatus) => {
-      setFiles((prevFiles) =>
-        prevFiles.map((file) =>
-          file.id === fileId ? { ...file, status } : file,
-        ),
-      );
+  // Function refs to avoid circular dependencies
+  const uploadNextPartRef = useRef<(fileId: string) => Promise<void>>();
+  const finalizeUploadRef = useRef<(fileId: string) => Promise<void>>();
+  const processQueueRef = useRef<() => void>();
+
+  // Function to finalize the upload
+  const finalizeUpload = useCallback(
+    async (fileId: string): Promise<void> => {
+      const fileEntry = files.find((f) => f.id === fileId);
+      if (!fileEntry || !fileEntry.uploadId) {
+        return;
+      }
+      try {
+        setFiles((prevFiles) =>
+          prevFiles.map((f) =>
+            f.id === fileId ? { ...f, status: "finalizing" } : f,
+          ),
+        );
+        // FIX: Send only uploadId and parts
+        const response = await fetch(completeUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            uploadId: fileEntry.uploadId,
+            parts: fileEntry.completedParts,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to complete upload: ${response.statusText}`);
+        }
+        const result = await response.json();
+        setFiles((prevFiles) =>
+          prevFiles.map((f) =>
+            f.id === fileId
+              ? { ...f, status: "completed", result, progress: 100 }
+              : f,
+          ),
+        );
+        activeUploadsCountRef.current = Math.max(
+          0,
+          activeUploadsCountRef.current - 1,
+        );
+        setTimeout(() => processQueueRef.current?.(), 0);
+      } catch (error) {
+        setFiles((prevFiles) =>
+          prevFiles.map((f) =>
+            f.id === fileId
+              ? {
+                  ...f,
+                  status: "error",
+                  error:
+                    error instanceof Error ? error.message : "Unknown error",
+                }
+              : f,
+          ),
+        );
+      }
     },
-    [],
+    [files, completeUrl],
   );
 
-  // Helper function to update file progress
-  const updateFileProgress = useCallback((fileId: string, progress: number) => {
-    setFiles((prevFiles) =>
-      prevFiles.map((file) =>
-        file.id === fileId ? { ...file, progress } : file,
-      ),
-    );
-  }, []);
-
-  // Helper function to update file entry
-  const updateFileEntry = useCallback(
-    (fileId: string, updates: Partial<FileUploadEntry>) => {
-      setFiles((prevFiles) =>
-        prevFiles.map((file) =>
-          file.id === fileId ? { ...file, ...updates } : file,
-        ),
-      );
-    },
-    [],
-  );
-
-  // Helper function to handle file upload error
-  const handleFileError = useCallback(
-    (fileId: string, errorMsg: string) => {
-      if (speedUpdateIntervalsRef.current.has(fileId)) {
-        clearInterval(speedUpdateIntervalsRef.current.get(fileId)!);
-        speedUpdateIntervalsRef.current.delete(fileId);
+  // Function to upload the next part of a file
+  const uploadNextPart = useCallback(
+    async (fileId: string): Promise<void> => {
+      const fileEntry = files.find((f) => f.id === fileId);
+      if (!fileEntry || !fileEntry.uploadId || !fileEntry.s3UploadId) {
+        return;
       }
 
-      updateFileEntry(fileId, { status: "error", error: errorMsg });
+      const partNumber = fileEntry.currentPart || 1;
+      const totalParts = fileEntry.totalParts || 1;
 
-      // Release the upload slot
-      activeUploadsCountRef.current--;
-
-      // Process the next upload
-      processQueueRef.current();
-    },
-    [updateFileEntry],
-  );
-
-  // Start speed tracking for a file
-  const startSpeedTracking = useCallback(
-    (fileId: string, totalSize: number) => {
-      // Reset values
-      uploadStartTimeRefs.current.set(fileId, Date.now());
-      lastLoadedRefs.current.set(fileId, 0);
-
-      // Clear any existing interval
-      if (speedUpdateIntervalsRef.current.has(fileId)) {
-        clearInterval(speedUpdateIntervalsRef.current.get(fileId)!);
+      if (partNumber > totalParts) {
+        await finalizeUploadRef.current?.(fileId);
+        return;
       }
 
-      // Update speed every second
-      const interval = setInterval(() => {
-        const fileEntry = files.find((f) => f.id === fileId);
-        if (fileEntry && fileEntry.status === "uploading") {
-          const xhr = xhrRefs.current.get(fileId);
-          const loaded = xhr?.upload
-            ? lastLoadedRefs.current.get(fileId) || 0
-            : 0;
-          const startTime =
-            uploadStartTimeRefs.current.get(fileId) || Date.now();
-          const elapsedSeconds = (Date.now() - startTime) / 1000;
+      try {
+        const start = (partNumber - 1) * chunkSizeInBytes;
+        const end = Math.min(start + chunkSizeInBytes, fileEntry.file.size);
+        const chunk = fileEntry.file.slice(start, end);
 
-          if (elapsedSeconds > 0 && loaded > 0) {
-            // Calculate speed in KB/s
-            const speedKBps = loaded / 1024 / elapsedSeconds;
+        const cacheKey = `${fileEntry.uploadId}-part-${partNumber}`;
+        let uploadUrl = presignedUrlCache.get(cacheKey);
 
-            // Calculate time remaining
-            const bytesRemaining = totalSize - loaded;
-            let remainingTime = "";
-            if (speedKBps > 0) {
-              const secondsRemaining = bytesRemaining / 1024 / speedKBps;
-              remainingTime = formatTimeRemaining(secondsRemaining);
+        if (!uploadUrl) {
+          const ongoingFetch = urlFetchPromises.get(cacheKey);
+          if (ongoingFetch) {
+            uploadUrl = await ongoingFetch;
+          } else {
+            // FIX: Use GET and query params for presigned-url
+            const url = `${presignedUrl}?uploadId=${encodeURIComponent(
+              fileEntry.uploadId,
+            )}&s3UploadId=${encodeURIComponent(
+              fileEntry.s3UploadId,
+            )}&partNumber=${partNumber}`;
+            const response = await fetch(url, { method: "GET" });
+            if (!response.ok) {
+              throw new Error(
+                `Failed to get presigned URL: ${response.statusText}`,
+              );
             }
+            const data = await response.json();
+            uploadUrl = data.uploadUrl;
+            setPresignedUrlCache((prev) =>
+              new Map(prev).set(cacheKey, uploadUrl!),
+            );
+          }
+        }
 
-            // Update the file entry
+        const xhr = new XMLHttpRequest();
+        const xhrKey = `${fileId}-part-${partNumber}`;
+        xhrRefs.current.set(xhrKey, xhr);
+
+        const startTime = Date.now();
+        uploadStartTimeRefs.current.set(fileId, startTime);
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const partProgress = (event.loaded / event.total) * 100;
+            const overallProgress =
+              ((partNumber - 1) / totalParts) * 100 + partProgress / totalParts;
+
+            const stats = calculateUploadStats(
+              (partNumber - 1) * chunkSizeInBytes + event.loaded,
+              fileEntry.file.size,
+              startTime,
+            );
+
             setFiles((prevFiles) =>
               prevFiles.map((f) =>
                 f.id === fileId
                   ? {
                       ...f,
-                      speed: Math.round(speedKBps),
-                      timeRemaining: remainingTime,
+                      progress: Math.round(overallProgress),
+                      speed: stats.speed,
+                      timeRemaining: stats.timeRemaining,
                     }
                   : f,
               ),
             );
           }
-        } else {
-          // If file is no longer uploading, clear the interval
-          clearInterval(speedUpdateIntervalsRef.current.get(fileId)!);
-          speedUpdateIntervalsRef.current.delete(fileId);
-        }
-      }, 1000);
+        };
 
-      speedUpdateIntervalsRef.current.set(fileId, interval);
-    },
-    [files],
-  );
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            const etag = xhr.getResponseHeader("ETag");
+            if (etag) {
+              setFiles((prevFiles) =>
+                prevFiles.map((f) =>
+                  f.id === fileId
+                    ? {
+                        ...f,
+                        completedParts: [
+                          ...(f.completedParts || []),
+                          { partNumber, etag: etag.replace(/"/g, "") },
+                        ],
+                        currentPart: partNumber + 1,
+                      }
+                    : f,
+                ),
+              );
 
-  // Function to finalize the upload
-  const finalizeUpload = useCallback(
-    async (fileId: string, uploadId: string) => {
-      try {
-        // Make the request to finalize the upload
-        const response = await fetch(`${finalizeUrl}?uploadId=${uploadId}`, {
-          method: "POST",
-        });
+              xhrRefs.current.delete(xhrKey);
+              setTimeout(() => uploadNextPartRef.current?.(fileId), 0);
+            }
+          } else {
+            setFiles((prevFiles) =>
+              prevFiles.map((f) =>
+                f.id === fileId
+                  ? {
+                      ...f,
+                      status: "error",
+                      error: `Upload failed: ${xhr.statusText}`,
+                    }
+                  : f,
+              ),
+            );
+          }
+        };
 
-        if (!response.ok) {
-          throw new Error(`Failed to finalize upload: ${response.statusText}`);
-        }
+        xhr.onerror = () => {
+          setFiles((prevFiles) =>
+            prevFiles.map((f) =>
+              f.id === fileId
+                ? {
+                    ...f,
+                    status: "error",
+                    error: "Upload error occurred",
+                  }
+                : f,
+            ),
+          );
+        };
 
-        const result = await response.json();
-        updateFileEntry(fileId, { status: "completed", result });
-
-        // Release the upload slot
-        activeUploadsCountRef.current--;
-
-        // Process the next upload
-        processQueueRef.current();
+        xhr.open("PUT", uploadUrl!);
+        xhr.send(chunk);
       } catch (error) {
-        console.error(`Error finalizing upload for file ${fileId}:`, error);
-        handleFileError(
-          fileId,
-          error instanceof Error ? error.message : "Failed to finalize upload",
+        setFiles((prevFiles) =>
+          prevFiles.map((f) =>
+            f.id === fileId
+              ? {
+                  ...f,
+                  status: "error",
+                  error:
+                    error instanceof Error ? error.message : "Unknown error",
+                }
+              : f,
+          ),
         );
       }
-    },
-    [finalizeUrl, updateFileEntry, handleFileError],
-  );
-
-  // Upload a chunk with XMLHttpRequest
-  const uploadChunkWithXHR = useCallback(
-    (
-      fileId: string,
-      chunkIndex: number,
-      uploadId: string,
-      totalChunks: number,
-    ) => {
-      const fileEntry = files.find((f) => f.id === fileId);
-      if (!fileEntry) return;
-
-      const file = fileEntry.file;
-
-      // Create a chunk from the file
-      const start = chunkIndex * chunkSizeInBytes;
-      const end = Math.min(start + chunkSizeInBytes, file.size);
-      const chunk = file.slice(start, end);
-
-      // Create the form data for this chunk
-      const formData = new FormData();
-      formData.append("chunk", chunk);
-      formData.append("partNumber", chunkIndex.toString());
-
-      // Create XHR
-      const xhr = new XMLHttpRequest();
-      xhrRefs.current.set(fileId, xhr);
-
-      // Setup progress monitoring
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const chunkProgress = event.loaded / event.total;
-          const overallProgress =
-            ((chunkIndex + chunkProgress) / totalChunks) * 100;
-
-          // Update progress
-          updateFileProgress(fileId, Math.round(overallProgress));
-
-          // Update lastLoaded for speed calculation
-          lastLoadedRefs.current.set(
-            fileId,
-            chunkIndex * chunkSizeInBytes + event.loaded,
-          );
-        }
-      };
-
-      // Handle completion
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          // Update chunk index
-          const newChunkIndex = chunkIndex + 1;
-
-          // Check if all chunks are uploaded
-          if (newChunkIndex < totalChunks) {
-            // Upload next chunk
-            uploadChunkWithXHR(fileId, newChunkIndex, uploadId, totalChunks);
-          } else {
-            // Finalize the upload
-            if (speedUpdateIntervalsRef.current.has(fileId)) {
-              clearInterval(speedUpdateIntervalsRef.current.get(fileId)!);
-              speedUpdateIntervalsRef.current.delete(fileId);
-            }
-
-            updateFileStatus(fileId, "finalizing");
-            finalizeUpload(fileId, uploadId);
-          }
-        } else {
-          handleFileError(fileId, `Failed to upload: ${xhr.statusText}`);
-        }
-      };
-
-      // Handle errors
-      xhr.onerror = () => {
-        handleFileError(fileId, "Network error occurred during upload");
-      };
-
-      xhr.onabort = () => {
-        // Handle by cancelUpload
-      };
-
-      // Open and send the request
-      xhr.open(
-        "POST",
-        `${uploadUrl}?uploadId=${uploadId}&partNumber=${chunkIndex}`,
-      );
-      xhr.send(formData);
     },
     [
       files,
       chunkSizeInBytes,
-      uploadUrl,
-      updateFileProgress,
-      updateFileStatus,
-      finalizeUpload,
-      handleFileError,
+      presignedUrl,
+      presignedUrlCache,
+      urlFetchPromises,
     ],
   );
 
-  // Upload file with XMLHttpRequest for better progress tracking
-  const uploadFileWithXHR = useCallback(
-    (fileId: string, uploadId: string, totalChunks: number) => {
-      const fileEntry = files.find((f) => f.id === fileId);
-      if (!fileEntry) return;
-
-      // Start speed tracking
-      startSpeedTracking(fileId, fileEntry.file.size);
-
-      // Upload first chunk
-      uploadChunkWithXHR(fileId, 0, uploadId, totalChunks);
-    },
-    [files, uploadChunkWithXHR, startSpeedTracking],
-  );
-
-  // Initiate upload for a file
+  // Function to initiate an upload
   const initiateUpload = useCallback(
-    async (fileEntry: FileUploadEntry) => {
-      const { id, file } = fileEntry;
-
-      updateFileStatus(id, "initiating");
-
+    async (fileEntry: FileUploadEntry): Promise<void> => {
       try {
-        // Calculate total chunks
-        const totalChunks = Math.ceil(file.size / chunkSizeInBytes);
+        setFiles((prevFiles) =>
+          prevFiles.map((f) =>
+            f.id === fileEntry.id ? { ...f, status: "initiating" } : f,
+          ),
+        );
 
-        // Make the request to the server
         const response = await fetch(initiateUrl, {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            filename: file.name,
-            contentType: file.type,
-            fileSize: file.size,
-            totalChunks,
+            filename: fileEntry.file.name,
+            size: fileEntry.file.size,
+            contentType: fileEntry.file.type,
+            chunkSize: chunkSizeInBytes,
+            folderId: currentFolderId,
           }),
         });
 
@@ -362,460 +316,314 @@ export function FileUploader({
         }
 
         const data = await response.json();
-        const uploadId = data.uploadId;
+        const { uploadId, s3UploadId } = data;
+        const totalParts = Math.ceil(fileEntry.file.size / chunkSizeInBytes);
 
-        // Update file entry with uploadId
-        updateFileEntry(id, { uploadId, status: "uploading" });
+        setFiles((prevFiles) =>
+          prevFiles.map((f) =>
+            f.id === fileEntry.id
+              ? {
+                  ...f,
+                  uploadId,
+                  s3UploadId,
+                  totalParts,
+                  currentPart: 1,
+                  completedParts: [],
+                  status: "uploading",
+                }
+              : f,
+          ),
+        ); // Pre-fetch the first few presigned URLs for larger files
+        if (totalParts > 1) {
+          const prefetchCount = Math.min(3, totalParts);
+          await preFetchPresignedUrls(
+            presignedUrl,
+            uploadId,
+            s3UploadId,
+            1,
+            prefetchCount,
+            presignedUrlCache,
+            urlFetchPromises,
+            setPresignedUrlCache,
+            setUrlFetchPromises,
+          );
+        }
 
-        // Start upload
-        uploadFileWithXHR(id, uploadId, totalChunks);
+        // Start uploading
+        uploadNextPartRef.current?.(fileEntry.id);
       } catch (error) {
-        console.error(`Error initiating upload for ${file.name}:`, error);
-        handleFileError(
-          id,
-          error instanceof Error ? error.message : "Failed to initiate upload",
+        console.error("Error initiating upload:", error);
+        setFiles((prevFiles) =>
+          prevFiles.map((f) =>
+            f.id === fileEntry.id
+              ? {
+                  ...f,
+                  status: "error",
+                  error:
+                    error instanceof Error ? error.message : "Unknown error",
+                }
+              : f,
+          ),
         );
       }
     },
     [
       initiateUrl,
       chunkSizeInBytes,
-      updateFileStatus,
-      updateFileEntry,
-      uploadFileWithXHR,
-      handleFileError,
+      currentFolderId,
+      presignedUrl,
+      presignedUrlCache,
+      urlFetchPromises,
     ],
   );
 
-  // Function to process the queue outside of React's hooks to avoid circular dependencies
+  // Function to process the upload queue
   const processQueue = useCallback(() => {
-    console.log(
-      `Processing queue: ${pendingUploadsRef.current.length} pending, ${activeUploadsCountRef.current}/${maxConcurrentUploads} active uploads`,
-    );
+    const pendingFiles = pendingUploadsRef.current;
+    const activeCount = activeUploadsCountRef.current;
 
-    if (
-      pendingUploadsRef.current.length > 0 &&
-      activeUploadsCountRef.current < maxConcurrentUploads
-    ) {
-      const availableSlots =
-        maxConcurrentUploads - activeUploadsCountRef.current;
-      const toProcess = Math.min(
-        availableSlots,
-        pendingUploadsRef.current.length,
-      );
+    if (activeCount >= maxConcurrentUploads || pendingFiles.length === 0) {
+      return;
+    }
 
-      console.log(`Starting ${toProcess} new uploads from queue`);
-
-      for (let i = 0; i < toProcess; i++) {
-        const fileId = pendingUploadsRef.current.shift();
-        if (!fileId) continue;
-
-        const fileEntry = files.find((f) => f.id === fileId);
-
-        if (fileEntry && fileEntry.status === "idle") {
-          activeUploadsCountRef.current++;
-          initiateUpload(fileEntry);
-        } else if (fileEntry) {
-          console.warn(
-            `File ${fileId} already has status: ${fileEntry.status}`,
-          );
-        } else {
-          console.warn(`File ${fileId} not found in files array`);
-        }
+    const fileId = pendingFiles.shift();
+    if (fileId) {
+      const fileEntry = files.find((f) => f.id === fileId);
+      if (fileEntry && fileEntry.status === "idle") {
+        activeUploadsCountRef.current++;
+        initiateUpload(fileEntry);
       }
     }
   }, [files, maxConcurrentUploads, initiateUpload]);
 
-  // Keep a ref to the latest processQueue function to avoid dependency cycles
-  const processQueueRef = useRef(processQueue);
-
-  // Update the ref whenever processQueue changes
+  // Update refs
   useEffect(() => {
+    uploadNextPartRef.current = uploadNextPart;
+    finalizeUploadRef.current = finalizeUpload;
     processQueueRef.current = processQueue;
-  }, [processQueue]);
+  }, [uploadNextPart, finalizeUpload, processQueue]);
 
-  // Function to cancel the upload of a specific file
+  // Function to cancel an upload
   const cancelUpload = useCallback(
     (fileId: string) => {
-      const xhr = xhrRefs.current.get(fileId);
-      if (xhr) {
-        xhr.abort();
-        xhrRefs.current.delete(fileId);
+      const fileEntry = files.find((f) => f.id === fileId);
+
+      // Cancel XHR requests
+      for (let i = 1; i <= (fileEntry?.totalParts || 0); i++) {
+        const xhr = xhrRefs.current.get(`${fileId}-part-${i}`);
+        if (xhr) {
+          xhr.abort();
+          xhrRefs.current.delete(`${fileId}-part-${i}`);
+        }
       }
 
+      // Clean up intervals
       if (speedUpdateIntervalsRef.current.has(fileId)) {
         clearInterval(speedUpdateIntervalsRef.current.get(fileId)!);
         speedUpdateIntervalsRef.current.delete(fileId);
       }
 
-      // Handle pending uploads
-      const pendingIndex = pendingUploadsRef.current.indexOf(fileId);
-      if (pendingIndex !== -1) {
-        pendingUploadsRef.current.splice(pendingIndex, 1);
-      } else {
-        // If it was an active upload, release the slot
-        activeUploadsCountRef.current--;
+      // Abort server-side upload
+      if (fileEntry && fileEntry.uploadId && fileEntry.s3UploadId) {
+        fetch(abortUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            uploadId: fileEntry.uploadId,
+            s3UploadId: fileEntry.s3UploadId,
+          }),
+        }).catch(console.error);
       }
 
-      updateFileEntry(fileId, {
-        status: "idle",
-        progress: 0,
-        speed: 0,
-        timeRemaining: "",
-      });
-
-      // Process the next upload
-      processQueueRef.current();
-    },
-    [updateFileEntry],
-  );
-
-  // Function to remove a file from the list
-  const removeFile = useCallback(
-    (fileId: string) => {
-      // Cancel upload if in progress
-      const fileEntry = files.find((f) => f.id === fileId);
-      if (
-        fileEntry &&
-        ["uploading", "initiating", "finalizing"].includes(fileEntry.status)
-      ) {
-        cancelUpload(fileId);
+      // Remove from pending uploads
+      const index = pendingUploadsRef.current.indexOf(fileId);
+      if (index > -1) {
+        pendingUploadsRef.current.splice(index, 1);
       }
 
-      // Remove file from the list
-      setFiles((prevFiles) => prevFiles.filter((file) => file.id !== fileId));
+      // Remove file
+      setFiles((prevFiles) => prevFiles.filter((f) => f.id !== fileId));
+
+      activeUploadsCountRef.current = Math.max(
+        0,
+        activeUploadsCountRef.current - 1,
+      );
+      setTimeout(() => processQueueRef.current?.(), 0);
     },
-    [files, cancelUpload],
+    [files, abortUrl],
   );
 
-  // Start all pending uploads
+  // Helper functions for controls
   const startAllUploads = useCallback(() => {
-    // Add all idle files to pending uploads
-    const idleFiles = files.filter((file) => file.status === "idle");
-
+    const idleFiles = files.filter((f) => f.status === "idle");
     idleFiles.forEach((file) => {
       if (!pendingUploadsRef.current.includes(file.id)) {
         pendingUploadsRef.current.push(file.id);
       }
     });
-
-    // Process the queue
-    processQueueRef.current();
+    processQueueRef.current?.();
   }, [files]);
 
-  // Cancel all active uploads
   const cancelAllUploads = useCallback(() => {
-    files.forEach((file) => {
-      if (["uploading", "initiating", "finalizing"].includes(file.status)) {
-        cancelUpload(file.id);
-      }
+    const activeFiles = files.filter((f) =>
+      ["uploading", "initiating", "finalizing"].includes(f.status),
+    );
+    activeFiles.forEach((file) => {
+      cancelUpload(file.id);
     });
-
-    // Clear pending uploads
-    pendingUploadsRef.current = [];
   }, [files, cancelUpload]);
 
-  // Clear all completed uploads
   const clearCompleted = useCallback(() => {
     setFiles((prevFiles) =>
       prevFiles.filter((file) => file.status !== "completed"),
     );
   }, []);
 
-  // Handle file selection
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const newFiles = event.target.files;
-    setErrorMessage(null);
+  // File processing
+  const processFiles = useCallback(
+    (newFiles: File[]) => {
+      setErrorMessage(null);
+      const fileEntries: FileUploadEntry[] = [];
 
-    if (!newFiles || newFiles.length === 0) return;
+      for (const file of newFiles) {
+        const validation = validateFile(file, maxSizeInMB, allowedFileTypes);
 
-    // Process each new file
-    const fileEntries: FileUploadEntry[] = [];
-
-    for (let i = 0; i < newFiles.length; i++) {
-      const file = newFiles[i];
-      if (!file) continue;
-
-      // Validate file size
-      if (file.size > maxSizeInMB * 1024 * 1024) {
-        setErrorMessage(
-          `File '${file.name}' is too large. Maximum size is ${maxSizeInMB}MB.`,
-        );
-        continue;
-      }
-
-      // Validate file type
-      if (allowedFileTypes && allowedFileTypes.length > 0) {
-        const fileType = file.type;
-        const isAllowed = allowedFileTypes.some((type) =>
-          fileType.startsWith(type),
-        );
-        if (!isAllowed) {
-          setErrorMessage(
-            `File type not allowed for '${file.name}'. Allowed types: ${allowedFileTypes.join(", ")}`,
-          );
+        if (!validation.isValid) {
+          setErrorMessage(validation.error || "File validation failed");
           continue;
         }
+
+        const fileEntry: FileUploadEntry = {
+          id: createFileId(),
+          file,
+          status: "idle",
+          progress: 0,
+          speed: 0,
+          timeRemaining: "",
+        };
+
+        fileEntries.push(fileEntry);
+        pendingUploadsRef.current.push(fileEntry.id);
       }
 
-      // Create a new file entry with a unique ID
-      const fileEntry: FileUploadEntry = {
-        id: `file_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-        file: file,
-        status: "idle",
-        progress: 0,
-        speed: 0,
-        timeRemaining: "",
-      };
+      setFiles((prevFiles) => [...prevFiles, ...fileEntries]);
+      setTimeout(() => processQueueRef.current?.(), 0);
+    },
+    [maxSizeInMB, allowedFileTypes],
+  );
 
-      fileEntries.push(fileEntry);
-      pendingUploadsRef.current.push(fileEntry.id);
-    }
+  // Drag and drop handlers
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(true);
+  }, []);
 
-    // Add new files to the list
-    setFiles((prevFiles) => [...prevFiles, ...fileEntries]);
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+  }, []);
 
-    // Reset the input
-    event.target.value = "";
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
 
-    // Immediately process the queue to start uploads
-    setTimeout(() => processQueueRef.current(), 0);
-  };
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setIsDragOver(false);
 
-  // Process the queue when component mounts or files array changes
-  useEffect(() => {
-    if (pendingUploadsRef.current.length > 0) {
-      setTimeout(() => processQueueRef.current(), 0);
-    }
+      const droppedFiles = Array.from(e.dataTransfer.files);
+      if (droppedFiles.length > 0) {
+        processFiles(droppedFiles);
+      }
+    },
+    [processFiles],
+  );
+
+  // Calculate overall progress
+  const getOverallProgress = useCallback(() => {
+    if (files.length === 0) return 0;
+    const totalProgress = files.reduce((sum, file) => sum + file.progress, 0);
+    return Math.round(totalProgress / files.length);
   }, [files]);
 
-  // Clean up speed intervals on unmount
+  // Helper booleans for controls
+  const hasIdleFiles = files.some((f) => f.status === "idle");
+  const hasActiveFiles = files.some((f) =>
+    ["uploading", "initiating", "finalizing"].includes(f.status),
+  );
+  const hasCompletedFiles = files.some((f) => f.status === "completed");
+
+  // Clean up on unmount
   useEffect(() => {
-    const intervals = new Map(speedUpdateIntervalsRef.current);
+    const intervals = speedUpdateIntervalsRef.current;
     return () => {
-      // Clean up all interval timers
       intervals.forEach((interval) => {
         clearInterval(interval);
       });
     };
   }, []);
 
-  // Calculate overall progress
-  const getOverallProgress = useCallback(() => {
-    if (files.length === 0) return 0;
-
-    const totalProgress = files.reduce((sum, file) => sum + file.progress, 0);
-    return Math.round(totalProgress / files.length);
+  // Process queue when files change
+  useEffect(() => {
+    if (pendingUploadsRef.current.length > 0) {
+      setTimeout(() => processQueueRef.current?.(), 0);
+    }
   }, [files]);
-
-  // Get counts by status
-  const getStatusCounts = useCallback(() => {
-    return files.reduce((counts: Record<string, number>, file) => {
-      counts[file.status] = (counts[file.status] || 0) + 1;
-      return counts;
-    }, {});
-  }, [files]);
-
-  const statusCounts = getStatusCounts();
-  const totalActive =
-    (statusCounts.uploading || 0) +
-    (statusCounts.initiating || 0) +
-    (statusCounts.finalizing || 0);
 
   return (
-    <Card className="w-full max-w-xl">
+    <Card className="w-full">
       <CardHeader>
         <CardTitle>{title}</CardTitle>
-        <CardDescription>
-          {description || (
-            <>
-              Upload files up to {maxSizeInMB}MB in size
-              {allowedFileTypes && allowedFileTypes.length > 0 && (
-                <span> of types: {allowedFileTypes.join(", ")}</span>
-              )}
-            </>
-          )}
-        </CardDescription>
+        {description && <CardDescription>{description}</CardDescription>}
       </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Input
-              type="file"
-              name="file"
-              id="file"
-              multiple
-              onChange={handleFileChange}
-              accept={
-                allowedFileTypes && allowedFileTypes.length > 0
-                  ? allowedFileTypes.join(",")
-                  : undefined
-              }
-              className="cursor-pointer"
-            />
-            {errorMessage && (
-              <div className="text-sm text-red-500 flex items-center gap-1">
-                <AlertCircle size={16} />
-                {errorMessage}
-              </div>
-            )}
-          </div>{" "}
-          {files.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex justify-between items-center text-xs text-muted-foreground mb-2">
-                <div className="flex justify-end items-center gap-2 my-4">
-                  <RingProgress
-                    progress={getOverallProgress()}
-                    size={60}
-                    thickness={4}
-                    progressClassName="text-primary"
-                    showPercentage={true}
-                    fontSize={15}
-                  />
-                </div>
-                <div className="flex gap-2">
-                  {statusCounts.idle! > 0 && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={startAllUploads}
-                    >
-                      <Upload size={14} className="mr-1" /> Start All
-                    </Button>
-                  )}
-                  {totalActive > 0 && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={cancelAllUploads}
-                    >
-                      <X size={14} className="mr-1" /> Cancel All
-                    </Button>
-                  )}
-                  {statusCounts.completed! > 0 && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={clearCompleted}
-                    >
-                      Clear Completed
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-          <ScrollArea className="h-[300px] overflow-hidden border rounded-md mt-4 p-2">
-            {files.map((fileEntry) => (
-              <div
-                key={fileEntry.id}
-                className="border rounded-md p-2 space-y-2 text-sm my-1"
-              >
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center gap-2 truncate">
-                    {fileEntry.status === "completed" ? (
-                      <CheckCircle2
-                        className="text-green-500 shrink-0"
-                        size={16}
-                      />
-                    ) : fileEntry.status === "error" ? (
-                      <AlertCircle
-                        className="text-red-500 shrink-0"
-                        size={16}
-                      />
-                    ) : (
-                      <span className="w-4 h-4 shrink-0" />
-                    )}
-                    <span className="truncate" title={fileEntry.file.name}>
-                      {fileEntry.file.name.length > 50
-                        ? fileEntry.file.name.slice(0, 50) + "..."
-                        : fileEntry.file.name}
-                    </span>
-                    <span className="text-muted-foreground shrink-0">
-                      {formatFileSize(fileEntry.file.size)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    {fileEntry.status === "idle" ? (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={() => {
-                          pendingUploadsRef.current.push(fileEntry.id);
-                          processQueueRef.current();
-                        }}
-                      >
-                        <Upload size={14} />
-                      </Button>
-                    ) : ["uploading", "initiating", "finalizing"].includes(
-                        fileEntry.status,
-                      ) ? (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={() => cancelUpload(fileEntry.id)}
-                      >
-                        <X size={14} />
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={() => removeFile(fileEntry.id)}
-                      >
-                        <X size={14} />
-                      </Button>
-                    )}
-                  </div>
-                </div>
+      <CardContent className="space-y-6">
+        {/* Error Display */}
+        {errorMessage && (
+          <div className="p-3 text-sm text-red-600 bg-red-50 dark:bg-red-950/20 rounded-md border border-red-200 dark:border-red-800">
+            {errorMessage}
+          </div>
+        )}
 
-                <div className="space-y-1">
-                  <div className="flex justify-between items-center text-xs text-muted-foreground">
-                    <div>
-                      {fileEntry.status === "uploading" && (
-                        <>
-                          {fileEntry.progress}%
-                          {fileEntry.speed > 0 && (
-                            <span className="ml-2">
-                              {fileEntry.speed} KB/s
-                              {fileEntry.timeRemaining && (
-                                <span className="ml-1">
-                                  • {fileEntry.timeRemaining} remaining
-                                </span>
-                              )}
-                            </span>
-                          )}
-                        </>
-                      )}
-                      {fileEntry.status === "initiating" &&
-                        "Preparing upload..."}
-                      {fileEntry.status === "finalizing" && "Finalizing..."}
-                      {fileEntry.status === "completed" && "Completed"}
-                      {fileEntry.status === "error" && fileEntry.error}
-                    </div>
-                    <div>
-                      {["uploading", "initiating", "finalizing"].includes(
-                        fileEntry.status,
-                      ) && (
-                        <span className="capitalize">{fileEntry.status}</span>
-                      )}
-                    </div>
-                  </div>{" "}
-                  {["uploading", "initiating", "finalizing"].includes(
-                    fileEntry.status,
-                  ) && (
-                    <div className="flex items-center">
-                      <Progress value={fileEntry.progress} className="h-1" />
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </ScrollArea>
-        </div>
+        {/* Drop Zone */}
+        <DropZone
+          onFilesSelected={processFiles}
+          isDragOver={isDragOver}
+          onDragEnter={handleDragEnter}
+          onDragLeave={handleDragLeave}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
+          maxSizeInMB={maxSizeInMB}
+          allowedFileTypes={allowedFileTypes}
+          disabled={activeUploadsCountRef.current >= maxConcurrentUploads}
+        />
+
+        {/* Uploader Controls */}
+        {files.length > 0 && (
+          <UploaderControls
+            overallProgress={getOverallProgress()}
+            activeUploadsCount={activeUploadsCountRef.current}
+            maxConcurrentUploads={maxConcurrentUploads}
+            hasIdleFiles={hasIdleFiles}
+            hasActiveFiles={hasActiveFiles}
+            hasCompletedFiles={hasCompletedFiles}
+            onStartAll={startAllUploads}
+            onCancelAll={cancelAllUploads}
+            onClearCompleted={clearCompleted}
+          />
+        )}
+
+        {/* File List */}
+        <FileList
+          files={files}
+          onUpload={initiateUpload}
+          onCancel={cancelUpload}
+          onRetry={initiateUpload}
+        />
       </CardContent>
     </Card>
   );

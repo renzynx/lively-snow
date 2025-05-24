@@ -1,5 +1,5 @@
 import type { MetaFunction, LoaderFunctionArgs } from "@remix-run/node";
-import { json } from "@remix-run/node";
+import { json, redirect } from "@remix-run/node";
 import { FileUploader } from "~/components/FileUploader";
 import { Layout } from "~/components/Layout";
 import {
@@ -28,7 +28,7 @@ export async function loader({ context }: LoaderFunctionArgs) {
 
   // Check if user is authenticated
   if (!user) {
-    throw new Response("Unauthorized", { status: 401 });
+    return redirect("/auth/login");
   }
 
   return json({ user });
@@ -81,11 +81,10 @@ export default function UploadPage() {
               management system. Upload multiple files simultaneously with
               progress tracking.
             </p>
-          </div>
-
+          </div>{" "}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
             {/* Upload Section */}
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-2 space-y-6">
               <Card className="border-0 shadow-lg">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
@@ -165,7 +164,6 @@ export default function UploadPage() {
               </Card>
             </div>
           </div>
-
           {/* Upload Tips */}
           <div className="mt-12">
             <Card className="border-0 bg-muted/50">

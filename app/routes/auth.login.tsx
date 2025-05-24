@@ -1,4 +1,4 @@
-import { Link, redirect } from "@remix-run/react";
+import { Link, useNavigate } from "@remix-run/react";
 import { FileText, LogIn } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -17,6 +17,8 @@ import { Label } from "~/components/ui/label";
 export default function Login() {
   const [data, setData] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
+  const navigate = useNavigate();
+
   return (
     <Layout>
       <div className="min-h-screen flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8 bg-gradient-to-br from-primary/5 via-background to-secondary/5">
@@ -69,7 +71,7 @@ export default function Login() {
                 const loginData = await res.json();
 
                 if (loginData.success) {
-                  return redirect("/upload");
+                  return navigate("/upload");
                 }
 
                 toast.error(loginData.message);

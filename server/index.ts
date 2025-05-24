@@ -1,7 +1,6 @@
 import "dotenv/config";
 import process from "node:process";
 import * as path from "node:path";
-import * as fs from "node:fs";
 import chalk from "chalk";
 import { remixFastify } from "@mcansh/remix-fastify";
 import { fastify, type FastifyReply, type FastifyRequest } from "fastify";
@@ -11,7 +10,6 @@ import sourceMapSupport from "source-map-support";
 import getPort, { portNumbers } from "get-port";
 import { fastifySession } from "@fastify/session";
 import { fastifyCookie } from "@fastify/cookie";
-import { uploadDir } from "./utils/upload";
 import { DrizzleStore } from "./utils/session";
 import { db } from "./database";
 import { fileURLToPath } from "url";
@@ -24,27 +22,25 @@ sourceMapSupport.install();
 
 const app = fastify({ trustProxy: true });
 
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
 app.register(fastifyCookie);
 app.register(fastifySession, {
   secret: process.env.SESSION_SECRET!,
   saveUninitialized: false,
   cookie: {
     secure: process.env.NODE_ENV === "production",
-    maxAge: 7 * 24 * 60 * 60, // 1 day
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 day
     sameSite: "lax",
     httpOnly: true,
-    domain: process.env.DOMAIN,
+    domain:
+      process.env.NODE_ENV === "production" ? process.env.DOMAIN : undefined,
   },
   store: new DrizzleStore(db),
 });
 
 app.register(multipart, {
   limits: {
-    fileSize: 5 * 1024 * 1024,
+    fileSize: 6 * 1024 * 1024, // 6MB to allow for 5MB chunks + overhead
+    files: 1, // Only one file per request (chunk)
   },
 });
 
@@ -55,6 +51,7 @@ app.register(autoload, {
 
 app.decorate("db", db);
 app.decorate("upload", new Map());
+app.decorate("downloads", new Map());
 app.decorate(
   "authenticate",
   async function (request: FastifyRequest, reply: FastifyReply) {

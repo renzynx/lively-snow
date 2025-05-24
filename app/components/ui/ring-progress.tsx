@@ -3,6 +3,7 @@ import { cn } from "~/lib/utils";
 
 interface RingProgressProps {
   progress: number; // 0-100
+  value?: number; // Alternative name for progress (for compatibility)
   size?: number; // Size in pixels
   thickness?: number; // Thickness in pixels
   className?: string;
@@ -11,10 +12,12 @@ interface RingProgressProps {
   showPercentage?: boolean; // Whether to show percentage in the middle
   fontSize?: number; // Font size for percentage text
   fontColor?: string; // Font color for percentage text
+  children?: React.ReactNode; // Allow for custom content in the center
 }
 
 export function RingProgress({
   progress,
+  value,
   size = 40,
   thickness = 4,
   className,
@@ -23,10 +26,14 @@ export function RingProgress({
   showPercentage = true,
   fontSize,
   fontColor,
+  children,
 }: RingProgressProps) {
   const [rotation, setRotation] = useState(0);
   const animationRef = useRef<number | null>(null);
-  const normalizedProgress = Math.min(100, Math.max(0, progress));
+  // Use either progress or value prop, with progress taking precedence
+  const progressValue =
+    progress !== undefined ? progress : value !== undefined ? value : 0;
+  const normalizedProgress = Math.min(100, Math.max(0, progressValue));
   const isComplete = normalizedProgress >= 100; // Check if progress is complete
   const isMinimal = normalizedProgress <= 1; // Check if progress is minimal
 
@@ -82,7 +89,6 @@ export function RingProgress({
           strokeWidth={thickness}
         />
       </svg>
-
       {/* Progress circle */}
       <svg
         className="absolute top-0 left-0 w-full h-full"
@@ -107,11 +113,12 @@ export function RingProgress({
             transition: "stroke-dashoffset 0.5s ease-in-out",
           }}
         />
-      </svg>
-
-      {/* Percentage text in the middle */}
-      {showPercentage && (
-        <div className="absolute inset-0 flex items-center justify-center">
+      </svg>{" "}
+      {/* Content in the middle - either children or percentage */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        {children ? (
+          children
+        ) : showPercentage ? (
           <span
             style={{
               fontSize: `${calculatedFontSize}px`,
@@ -122,8 +129,8 @@ export function RingProgress({
           >
             {Math.round(normalizedProgress)}%
           </span>
-        </div>
-      )}
+        ) : null}
+      </div>
     </div>
   );
 }
