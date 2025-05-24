@@ -26,6 +26,7 @@ export type FileUploadEntry = {
   completedParts?: Array<{ partNumber: number; etag: string }>;
   currentPart?: number;
   totalParts?: number;
+  shouldStartUpload?: boolean; // Flag to trigger upload start after state update
 };
 
 interface FileListItemProps {

@@ -127,9 +127,7 @@ export function FileUploader({
       }
     },
     [files, completeUrl],
-  );
-
-  // Function to upload the next part of a file
+  ); // Function to upload the next part of a file
   const uploadNextPart = useCallback(
     async (fileId: string): Promise<void> => {
       const fileEntry = files.find((f) => f.id === fileId);
@@ -314,7 +312,6 @@ export function FileUploader({
         if (!response.ok) {
           throw new Error(`Failed to initiate upload: ${response.statusText}`);
         }
-
         const data = await response.json();
         const { uploadId, s3UploadId } = data;
         const totalParts = Math.ceil(fileEntry.file.size / chunkSizeInBytes);
@@ -329,11 +326,14 @@ export function FileUploader({
                   totalParts,
                   currentPart: 1,
                   completedParts: [],
-                  status: "uploading",
+                  status: "uploading" as const,
+                  shouldStartUpload: true, // Flag to trigger upload start
                 }
               : f,
           ),
-        ); // Pre-fetch the first few presigned URLs for larger files
+        );
+
+        // Pre-fetch the first few presigned URLs for larger files
         if (totalParts > 1) {
           const prefetchCount = Math.min(3, totalParts);
           await preFetchPresignedUrls(
@@ -348,9 +348,6 @@ export function FileUploader({
             setUrlFetchPromises,
           );
         }
-
-        // Start uploading
-        uploadNextPartRef.current?.(fileEntry.id);
       } catch (error) {
         console.error("Error initiating upload:", error);
         setFiles((prevFiles) =>
@@ -395,13 +392,26 @@ export function FileUploader({
       }
     }
   }, [files, maxConcurrentUploads, initiateUpload]);
-
   // Update refs
   useEffect(() => {
     uploadNextPartRef.current = uploadNextPart;
     finalizeUploadRef.current = finalizeUpload;
     processQueueRef.current = processQueue;
   }, [uploadNextPart, finalizeUpload, processQueue]);
+  // Start upload when shouldStartUpload flag is set
+  useEffect(() => {
+    files.forEach((file) => {
+      if (file.shouldStartUpload && file.uploadId && file.s3UploadId) {
+        // Reset the flag and start upload
+        setFiles((prevFiles) =>
+          prevFiles.map((f) =>
+            f.id === file.id ? { ...f, shouldStartUpload: false } : f,
+          ),
+        );
+        setTimeout(() => uploadNextPartRef.current?.(file.id), 0);
+      }
+    });
+  }, [files]);
 
   // Function to cancel an upload
   const cancelUpload = useCallback(
