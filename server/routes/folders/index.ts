@@ -1,5 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, sql, asc, desc } from "drizzle-orm";
 import { db } from "../../database/index.js";
 import {
   folders,
@@ -34,7 +34,6 @@ const foldersRoute: FastifyPluginAsync = async (fastify) => {
       }
     },
   );
-
   // Get folder contents (subfolders and files)
   fastify.get(
     "/:folderId/contents",
@@ -44,6 +43,21 @@ const foldersRoute: FastifyPluginAsync = async (fastify) => {
         const user = request.session.user!;
 
         const { folderId } = request.params as { folderId: string };
+        const {
+          filesPage = 1,
+          foldersPage = 1,
+          itemsPerPage = 20,
+          search = "",
+          sortBy = "name",
+          sortOrder = "asc",
+        } = request.query as {
+          filesPage?: number;
+          foldersPage?: number;
+          itemsPerPage?: number;
+          search?: string;
+          sortBy?: string;
+          sortOrder?: string;
+        };
 
         // Verify folder belongs to user
         const folder = await db.query.folders.findFirst({
@@ -54,25 +68,113 @@ const foldersRoute: FastifyPluginAsync = async (fastify) => {
           return reply.code(404).send({ error: "Folder not found" });
         }
 
-        // Get subfolders
-        const subfolders = await db.query.folders.findMany({
-          where: and(
-            eq(folders.parent_id, folderId),
-            eq(folders.user_id, user.id),
-          ),
-          orderBy: (folders, { asc }) => [asc(folders.name)],
-        });
+        // Calculate pagination offsets
+        const filesOffset = (Number(filesPage) - 1) * Number(itemsPerPage);
+        const foldersOffset = (Number(foldersPage) - 1) * Number(itemsPerPage);
 
-        // Get files in folder
-        const folderFiles = await db.query.files.findMany({
-          where: and(eq(files.folder_id, folderId), eq(files.user_id, user.id)),
-          orderBy: (files, { desc }) => [desc(files.created_at)],
-        });
+        // Build base conditions
+        const basefolderConditions = and(
+          eq(folders.parent_id, folderId),
+          eq(folders.user_id, user.id),
+          search
+            ? sql`LOWER(${folders.name}) LIKE LOWER(${"%" + search + "%"})`
+            : undefined,
+        );
+
+        const baseFileConditions = and(
+          eq(files.folder_id, folderId),
+          eq(files.user_id, user.id),
+          isNotNull(files.completed_at),
+          search
+            ? sql`LOWER(${files.name}) LIKE LOWER(${"%" + search + "%"})`
+            : undefined,
+        );
+
+        // Build order by clause
+        const getSortOrder = (field: string, order: string) => {
+          const direction = order === "desc" ? desc : asc;
+          switch (field) {
+            case "size":
+              return direction(files.size);
+            case "created_at":
+              return direction(files.created_at);
+            case "content_type":
+              return direction(files.content_type);
+            case "name":
+            default:
+              return direction(files.name);
+          }
+        };
+
+        const getFolderSortOrder = (field: string, order: string) => {
+          const direction = order === "desc" ? desc : asc;
+          switch (field) {
+            case "created_at":
+              return direction(folders.created_at);
+            case "name":
+            default:
+              return direction(folders.name);
+          }
+        };
+
+        // Get paginated subfolders
+        const [subfolders, totalSubfolders] = await Promise.all([
+          db.query.folders.findMany({
+            where: basefolderConditions,
+            orderBy: getFolderSortOrder(sortBy, sortOrder),
+            limit: Number(itemsPerPage),
+            offset: foldersOffset,
+          }),
+          db
+            .select({ count: sql<number>`count(*)` })
+            .from(folders)
+            .where(basefolderConditions)
+            .then((result) => result[0]?.count || 0),
+        ]);
+
+        // Get paginated files
+        const [folderFiles, totalFiles] = await Promise.all([
+          db.query.files.findMany({
+            where: baseFileConditions,
+            orderBy: getSortOrder(sortBy, sortOrder),
+            limit: Number(itemsPerPage),
+            offset: filesOffset,
+          }),
+          db
+            .select({ count: sql<number>`count(*)` })
+            .from(files)
+            .where(baseFileConditions)
+            .then((result) => result[0]?.count || 0),
+        ]);
+
+        // Calculate pagination info
+        const subfoldersPagination = {
+          currentPage: Number(foldersPage),
+          totalPages: Math.ceil(totalSubfolders / Number(itemsPerPage)),
+          totalItems: totalSubfolders,
+          itemsPerPage: Number(itemsPerPage),
+          hasNextPage:
+            Number(foldersPage) <
+            Math.ceil(totalSubfolders / Number(itemsPerPage)),
+          hasPreviousPage: Number(foldersPage) > 1,
+        };
+
+        const filesPagination = {
+          currentPage: Number(filesPage),
+          totalPages: Math.ceil(totalFiles / Number(itemsPerPage)),
+          totalItems: totalFiles,
+          itemsPerPage: Number(itemsPerPage),
+          hasNextPage:
+            Number(filesPage) < Math.ceil(totalFiles / Number(itemsPerPage)),
+          hasPreviousPage: Number(filesPage) > 1,
+        };
 
         return reply.send({
           folder,
           subfolders,
           files: folderFiles,
+          subfoldersPagination,
+          filesPagination,
         });
       } catch (error) {
         console.error("Error fetching folder contents:", error);
@@ -80,7 +182,6 @@ const foldersRoute: FastifyPluginAsync = async (fastify) => {
       }
     },
   );
-
   // Get root level contents (folders and files without parent)
   fastify.get(
     "/root",
@@ -89,20 +190,130 @@ const foldersRoute: FastifyPluginAsync = async (fastify) => {
       try {
         const user = request.session.user!;
 
-        // Get root folders (no parent)
-        const rootFolders = await db.query.folders.findMany({
-          where: and(isNull(folders.parent_id), eq(folders.user_id, user.id)),
-          orderBy: (folders, { asc }) => [asc(folders.name)],
-        });
+        const {
+          filesPage = 1,
+          foldersPage = 1,
+          itemsPerPage = 20,
+          search = "",
+          sortBy = "name",
+          sortOrder = "asc",
+        } = request.query as {
+          filesPage?: number;
+          foldersPage?: number;
+          itemsPerPage?: number;
+          search?: string;
+          sortBy?: string;
+          sortOrder?: string;
+        };
 
-        // Get root files (no folder)
-        const rootFiles = await db.query.files.findMany({
-          where: and(isNull(files.folder_id), eq(files.user_id, user.id)),
-          orderBy: (files, { desc }) => [desc(files.created_at)],
-        });
+        // Calculate pagination offsets
+        const filesOffset = (Number(filesPage) - 1) * Number(itemsPerPage);
+        const foldersOffset = (Number(foldersPage) - 1) * Number(itemsPerPage);
+
+        // Build base conditions for root content (no parent)
+        const basefolderConditions = and(
+          isNull(folders.parent_id),
+          eq(folders.user_id, user.id),
+          search
+            ? sql`LOWER(${folders.name}) LIKE LOWER(${"%" + search + "%"})`
+            : undefined,
+        );
+
+        const baseFileConditions = and(
+          isNull(files.folder_id),
+          eq(files.user_id, user.id),
+          isNotNull(files.completed_at),
+          search
+            ? sql`LOWER(${files.name}) LIKE LOWER(${"%" + search + "%"})`
+            : undefined,
+        );
+
+        // Build order by clause
+        const getSortOrder = (field: string, order: string) => {
+          const direction = order === "desc" ? desc : asc;
+          switch (field) {
+            case "size":
+              return direction(files.size);
+            case "created_at":
+              return direction(files.created_at);
+            case "content_type":
+              return direction(files.content_type);
+            case "name":
+            default:
+              return direction(files.name);
+          }
+        };
+
+        const getFolderSortOrder = (field: string, order: string) => {
+          const direction = order === "desc" ? desc : asc;
+          switch (field) {
+            case "created_at":
+              return direction(folders.created_at);
+            case "name":
+            default:
+              return direction(folders.name);
+          }
+        };
+
+        // Get paginated root folders
+        const [rootFolders, totalRootFolders] = await Promise.all([
+          db.query.folders.findMany({
+            where: basefolderConditions,
+            orderBy: getFolderSortOrder(sortBy, sortOrder),
+            limit: Number(itemsPerPage),
+            offset: foldersOffset,
+          }),
+          db
+            .select({ count: sql<number>`count(*)` })
+            .from(folders)
+            .where(basefolderConditions)
+            .then((result) => result[0]?.count || 0),
+        ]);
+
+        // Get paginated root files
+        const [rootFiles, totalRootFiles] = await Promise.all([
+          db.query.files.findMany({
+            where: baseFileConditions,
+            orderBy: getSortOrder(sortBy, sortOrder),
+            limit: Number(itemsPerPage),
+            offset: filesOffset,
+          }),
+          db
+            .select({ count: sql<number>`count(*)` })
+            .from(files)
+            .where(baseFileConditions)
+            .then((result) => result[0]?.count || 0),
+        ]);
+
+        // Calculate pagination info
+        const subfoldersPagination = {
+          currentPage: Number(foldersPage),
+          totalPages: Math.ceil(totalRootFolders / Number(itemsPerPage)),
+          totalItems: totalRootFolders,
+          itemsPerPage: Number(itemsPerPage),
+          hasNextPage:
+            Number(foldersPage) <
+            Math.ceil(totalRootFolders / Number(itemsPerPage)),
+          hasPreviousPage: Number(foldersPage) > 1,
+        };
+
+        const filesPagination = {
+          currentPage: Number(filesPage),
+          totalPages: Math.ceil(totalRootFiles / Number(itemsPerPage)),
+          totalItems: totalRootFiles,
+          itemsPerPage: Number(itemsPerPage),
+          hasNextPage:
+            Number(filesPage) <
+            Math.ceil(totalRootFiles / Number(itemsPerPage)),
+          hasPreviousPage: Number(filesPage) > 1,
+        };
+
         return reply.send({
+          folder: null, // Root has no folder object
           subfolders: rootFolders,
           files: rootFiles,
+          subfoldersPagination,
+          filesPagination,
         });
       } catch (error) {
         console.error("Error fetching root contents:", error);

@@ -21,7 +21,7 @@ import type {
   SortConfig,
   SortField,
   SortDirection,
-} from "../types";
+} from "~/types/folder-browser";
 
 interface ToolbarProps {
   contents: FolderContents;

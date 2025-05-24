@@ -8,7 +8,7 @@ import {
   BreadcrumbSeparator,
   BreadcrumbPage,
 } from "~/components/ui/breadcrumb";
-import type { FolderItem } from "../types";
+import type { FolderItem } from "~/types/folder-browser";
 
 interface BreadcrumbNavProps {
   breadcrumb: FolderItem[];

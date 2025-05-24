@@ -9,7 +9,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "~/components/ui/alert-dialog";
-import type { FileItem, FolderItem } from "../types";
+import type { FileItem, FolderItem } from "~/types/folder-browser";
 
 interface DeleteFolderDialogProps {
   isOpen: boolean;

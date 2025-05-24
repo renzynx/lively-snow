@@ -5,6 +5,7 @@ import {
   LogIn,
   LogOut,
   Menu,
+  Shield,
   Upload,
   User,
   UserPlus,
@@ -42,13 +43,15 @@ export function Layout({ children }: LayoutProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const rootData = useRouteLoaderData<RootLoaderData>("root");
   const user = rootData?.user;
-
   const navigation = [
     { name: "Home", href: "/", icon: Home },
     ...(user
       ? [
           { name: "Upload Files", href: "/upload", icon: Upload },
           { name: "My Files", href: "/files", icon: FileText },
+          ...(user.role === "admin" || user.role === "super_admin"
+            ? [{ name: "Admin Dashboard", href: "/admin", icon: Shield }]
+            : []),
         ]
       : []),
   ];

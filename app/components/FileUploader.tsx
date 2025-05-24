@@ -16,6 +16,7 @@ import {
   createFileId,
   validateFile,
 } from "~/lib/utils";
+import { useFileStore } from "~/stores/fileStore";
 
 export interface FileUploaderProps {
   maxSizeInMB?: number;
@@ -44,6 +45,7 @@ export function FileUploader({
   maxConcurrentUploads = 3,
   currentFolderId = null,
 }: FileUploaderProps) {
+  const { addFile, currentFolderId: storeFolderId } = useFileStore();
   const [files, setFiles] = useState<FileUploadEntry[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -63,7 +65,8 @@ export function FileUploader({
   const uploadStartTimeRefs = useRef<Map<string, number>>(new Map());
   const speedUpdateIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(
     new Map(),
-  );
+  ); // Use store's currentFolderId if no explicit currentFolderId is provided
+  const activeFolderId = currentFolderId || storeFolderId;
 
   // Convert chunk size to bytes
   const chunkSizeInBytes = chunkSizeInMB * 1024 * 1024;
@@ -106,6 +109,28 @@ export function FileUploader({
               : f,
           ),
         );
+
+        // Add file to Zustand store when upload is completed
+        if (result.success && result.fileId) {
+          const completedFileEntry = files.find((f) => f.id === fileId);
+          if (completedFileEntry) {
+            const newFileItem = {
+              id: result.fileId,
+              name: completedFileEntry.file.name,
+              size: completedFileEntry.file.size,
+              content_type: completedFileEntry.file.type,
+              completed_at: new Date(),
+              s3_key: null,
+              s3_upload_id: null,
+              user_id: "", // This will be set by the server
+              folder_id: activeFolderId,
+              created_at: new Date(),
+              updated_at: new Date(),
+            };
+            addFile(newFileItem);
+          }
+        }
+
         activeUploadsCountRef.current = Math.max(
           0,
           activeUploadsCountRef.current - 1,
@@ -126,7 +151,7 @@ export function FileUploader({
         );
       }
     },
-    [files, completeUrl],
+    [files, completeUrl, addFile, activeFolderId],
   ); // Function to upload the next part of a file
   const uploadNextPart = useCallback(
     async (fileId: string): Promise<void> => {
@@ -305,7 +330,7 @@ export function FileUploader({
             size: fileEntry.file.size,
             contentType: fileEntry.file.type,
             chunkSize: chunkSizeInBytes,
-            folderId: currentFolderId,
+            folderId: activeFolderId,
           }),
         });
 
@@ -367,7 +392,7 @@ export function FileUploader({
     [
       initiateUrl,
       chunkSizeInBytes,
-      currentFolderId,
+      activeFolderId,
       presignedUrl,
       presignedUrlCache,
       urlFetchPromises,

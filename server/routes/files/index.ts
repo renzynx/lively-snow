@@ -1,7 +1,7 @@
 import { eq, and } from "drizzle-orm";
 import type { FastifyPluginAsync } from "fastify";
 import { files } from "../../database/schema";
-import { generatePresignedDownloadUrl } from "server/utils/s3";
+import { deleteObject, generatePresignedDownloadUrl } from "../../utils/s3";
 
 const route: FastifyPluginAsync = async (fastify): Promise<void> => {
   fastify.get("/:fileId", async function (request, reply) {
@@ -13,15 +13,9 @@ const route: FastifyPluginAsync = async (fastify): Promise<void> => {
 
     const file = await fastify.db.query.files.findFirst({
       where: eq(files.id, fileId),
-      columns: {
-        id: true,
-        name: true,
-        s3_key: true,
-        content_type: true,
-      },
     });
 
-    if (!file || !file.s3_key) {
+    if (!file || !file.s3_key || !file.completed_at) {
       return reply.status(404).send({ error: "File not found" });
     }
 
@@ -39,6 +33,32 @@ const route: FastifyPluginAsync = async (fastify): Promise<void> => {
       contentType: file.content_type,
       downloadUrl: url,
     });
+  });
+
+  // Direct download endpoint - redirects to S3 URL
+  fastify.get("/:fileId/download", async function (request, reply) {
+    const { fileId } = request.params as { fileId: string };
+
+    if (!fileId) {
+      return reply.status(400).send({ error: "File ID is required" });
+    }
+
+    const file = await fastify.db.query.files.findFirst({
+      where: eq(files.id, fileId),
+    });
+
+    if (!file || !file.s3_key || !file.completed_at) {
+      return reply.status(404).send({ error: "File not found" });
+    }
+
+    const url = await generatePresignedDownloadUrl(file.s3_key);
+
+    if (!url) {
+      return reply
+        .status(500)
+        .send({ error: "Failed to generate download URL" });
+    } // Redirect to the S3 presigned URL for direct download
+    return reply.status(302).redirect(url);
   });
 
   // Delete a file
@@ -63,11 +83,12 @@ const route: FastifyPluginAsync = async (fastify): Promise<void> => {
           return reply.status(404).send({ error: "File not found" });
         }
 
-        // Delete the file from database
-        await fastify.db.delete(files).where(eq(files.id, fileId));
+        const promises = [
+          fastify.db.delete(files).where(eq(files.id, fileId)),
+          deleteObject(file.s3_key!),
+        ];
 
-        // TODO: Also delete from S3 storage
-        // await deleteFromS3(file.s3_key);
+        await Promise.all(promises);
 
         return reply.status(204).send();
       } catch (error) {

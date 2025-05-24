@@ -10,7 +10,7 @@ import {
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Form } from "@remix-run/react";
-import type { FolderItem } from "../types";
+import type { FolderItem } from "~/types/folder-browser";
 
 interface CreateFolderDialogProps {
   isOpen: boolean;

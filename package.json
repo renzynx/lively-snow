@@ -10,7 +10,9 @@
     "lint": "eslint --ignore-path .gitignore --no-error-on-unmatched-pattern --cache --cache-location node_modules/.cache/eslint --fix .",
     "start": "cross-env NODE_ENV=production node ./dist/index.mjs",
     "typecheck": "tsc",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "create-super-admin": "tsx scripts/create-super-admin-fixed.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.817.0",
@@ -40,6 +42,7 @@
     "@remix-run/react": "^2.16.7",
     "@remix-run/server-runtime": "^2.16.7",
     "@tailwindcss/vite": "^4.1.7",
+    "@types/node-cron": "^3.0.11",
     "argon2": "^0.43.0",
     "chalk": "^5.3.0",
     "class-variance-authority": "^0.7.1",
@@ -53,6 +56,7 @@
     "isbot": "^5.1.21",
     "lucide-react": "^0.511.0",
     "next-themes": "^0.4.6",
+    "node-cron": "^4.0.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "remix-themes": "^2.0.4",
@@ -60,7 +64,8 @@
     "source-map-support": "^0.5.21",
     "tailwind-merge": "^3.3.0",
     "tailwindcss": "^4.1.7",
-    "unique-username-generator": "^1.4.0"
+    "unique-username-generator": "^1.4.0",
+    "zustand": "^5.0.5"
   },
   "devDependencies": {
     "@remix-run/dev": "^2.16.7",

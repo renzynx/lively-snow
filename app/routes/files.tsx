@@ -1,11 +1,10 @@
-import type { MetaFunction } from "@remix-run/node";
+import type { MetaFunction, LoaderFunctionArgs } from "@remix-run/node";
+import { redirect } from "@remix-run/node";
 import { useState } from "react";
 import { useSearchParams } from "@remix-run/react";
 import { Layout } from "~/components/Layout";
-import { FolderBrowser } from "~/components/FolderBrowser";
+import { FolderBrowser } from "~/components/folder-browser";
 import { FileUploader } from "~/components/FileUploader";
-import { Button } from "~/components/ui/button";
-import { Upload } from "lucide-react";
 
 export const meta: MetaFunction = () => {
   return [
@@ -16,6 +15,14 @@ export const meta: MetaFunction = () => {
     },
   ];
 };
+
+export async function loader({ context }: LoaderFunctionArgs) {
+  if (!context.user) {
+    throw redirect("/auth/login");
+  }
+
+  return {};
+}
 
 export default function Files() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -46,6 +53,7 @@ export default function Files() {
       }
 
       const data = await response.json();
+
       if (!data.downloadUrl) {
         throw new Error("Download URL not available");
       }
@@ -54,6 +62,8 @@ export default function Files() {
       const a = document.createElement("a");
       a.style.display = "none";
       a.href = data.downloadUrl;
+      a.target = "_blank"; // Open in new tab
+      a.rel = "noopener noreferrer"; // Security best practice
       a.download = fileName;
       document.body.appendChild(a);
       a.click();
@@ -66,23 +76,6 @@ export default function Files() {
     <Layout>
       <div className="py-8">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          {/* Header */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-8">
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight text-foreground">
-                My Files
-              </h1>
-              <p className="mt-2 text-muted-foreground">
-                Manage and organize your uploaded files
-              </p>
-            </div>
-            <div className="mt-4 sm:mt-0 flex gap-2">
-              <Button onClick={() => handleUploadToFolder(null)}>
-                <Upload className="w-4 h-4 mr-2" />
-                Upload Files
-              </Button>
-            </div>
-          </div>
           {/* Show uploader when requested */}
           {showUploader && (
             <div className="mb-8">

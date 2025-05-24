@@ -12,6 +12,7 @@ import { fastifySession } from "@fastify/session";
 import { fastifyCookie } from "@fastify/cookie";
 import { DrizzleStore } from "./utils/session";
 import { db } from "./database";
+import { createFileCleanupService } from "./services/fileCleanup";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 
@@ -50,7 +51,6 @@ app.register(autoload, {
 });
 
 app.decorate("db", db);
-app.decorate("upload", new Map());
 app.decorate("downloads", new Map());
 app.decorate(
   "authenticate",
@@ -68,6 +68,36 @@ app.register(remixFastify, {
       user: request.session?.user,
     };
   },
+});
+
+// Initialize file cleanup service
+const cleanupService = createFileCleanupService({
+  db,
+  maxAgeHours: 24, // Delete unfinished files older than 24 hours
+  cronSchedule: "0 */6 * * *", // Run every 6 hours
+  enableLogging: true,
+});
+
+// Start cleanup service
+cleanupService.start();
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log(chalk.yellow("🛑 Received SIGTERM, shutting down gracefully..."));
+  cleanupService.stop();
+  app.close(() => {
+    console.log(chalk.blue("✅ Server closed"));
+    process.exit(0);
+  });
+});
+
+process.on("SIGINT", () => {
+  console.log(chalk.yellow("🛑 Received SIGINT, shutting down gracefully..."));
+  cleanupService.stop();
+  app.close(() => {
+    console.log(chalk.blue("✅ Server closed"));
+    process.exit(0);
+  });
 });
 
 const host = "0.0.0.0";

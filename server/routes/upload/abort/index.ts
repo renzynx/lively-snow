@@ -57,9 +57,6 @@ const route: FastifyPluginAsync = async (fastify): Promise<void> => {
         // Delete file record from database
         await fastify.db.delete(files).where(eq(files.id, file.id));
 
-        // Clean up upload metadata from memory
-        fastify.upload.delete(file.id);
-
         return reply.send({
           success: true,
           message: "Upload aborted successfully",

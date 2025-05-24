@@ -88,16 +88,6 @@ const route: FastifyPluginAsync = async (fastify): Promise<void> => {
             s3_upload_id: multipartUpload.uploadId,
           })
           .where(eq(files.id, file.id)); // Store upload metadata in memory for tracking
-        fastify.upload.set(file.id, {
-          filename,
-          contentType,
-          fileSize: size,
-          totalChunks,
-          uploadDir: "", // Not used for S3 uploads
-          receivedChunks: new Set<number>(),
-          s3Key,
-          s3UploadId: multipartUpload.uploadId,
-        });
 
         return reply.send({
           success: true,

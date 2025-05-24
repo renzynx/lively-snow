@@ -23,7 +23,7 @@ import {
   ContextMenuTrigger,
 } from "~/components/ui/context-menu";
 import { formatFileSize } from "~/lib/utils";
-import type { FolderItem, FileItem } from "../types";
+import type { FolderItem, FileItem } from "~/types/folder-browser";
 
 interface GridViewProps {
   folders: FolderItem[];

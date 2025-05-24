@@ -1,13 +1,5 @@
 import * as React from "react";
-import {
-  File,
-  Folder,
-  Download,
-  Eye,
-  MoreHorizontal,
-  Trash2,
-  Edit2,
-} from "lucide-react";
+import { File, Folder, Download, Eye, Trash2, Edit2 } from "lucide-react";
 import {
   Table,
   TableBody,
@@ -17,14 +9,8 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { Button } from "~/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "~/components/ui/dropdown-menu";
 import { formatFileSize } from "~/lib/utils";
-import type { FolderItem, FileItem } from "../types";
+import type { FolderItem, FileItem } from "~/types/folder-browser";
 
 interface TableViewProps {
   folders: FolderItem[];
@@ -77,38 +63,43 @@ export function TableView({
               <TableCell className="text-muted-foreground">Folder</TableCell>
               <TableCell className="text-muted-foreground">
                 {new Date(folder.updated_at).toLocaleDateString()}
-              </TableCell>
+              </TableCell>{" "}
               <TableCell className="text-right">
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    asChild
-                    onClick={(e) => e.stopPropagation()}
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onFolderClick(folder.id);
+                    }}
+                    title="View folder"
                   >
-                    <Button variant="ghost" size="sm">
-                      <MoreHorizontal className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRenameFolder(folder);
-                      }}
-                    >
-                      <Edit2 className="h-4 w-4 mr-2" />
-                      Rename
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteFolder(folder);
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                    <Eye className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRenameFolder(folder);
+                    }}
+                    title="Edit folder"
+                  >
+                    <Edit2 className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteFolder(folder);
+                    }}
+                    title="Delete folder"
+                  >
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </div>
               </TableCell>
             </TableRow>
           ))}
@@ -136,50 +127,45 @@ export function TableView({
                 {file.completed_at
                   ? new Date(file.completed_at).toLocaleDateString()
                   : "Uploading..."}
-              </TableCell>
+              </TableCell>{" "}
               <TableCell className="text-right">
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    asChild
-                    onClick={(e) => e.stopPropagation()}
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onFileClick(file);
+                    }}
+                    title="View file"
                   >
-                    <Button variant="ghost" size="sm">
-                      <MoreHorizontal className="h-4 w-4" />
+                    <Eye className="h-4 w-4" />
+                  </Button>
+                  {file.completed_at && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDownloadFile?.(file);
+                      }}
+                      title="Download file"
+                    >
+                      <Download className="h-4 w-4" />
                     </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onFileClick(file);
-                      }}
-                    >
-                      <Eye className="h-4 w-4 mr-2" />
-                      View
-                    </DropdownMenuItem>{" "}
-                    {file.completed_at && (
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDownloadFile?.(file);
-                        }}
-                      >
-                        <Download className="h-4 w-4 mr-2" />
-                        Download
-                      </DropdownMenuItem>
-                    )}
-                    <DropdownMenuItem
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteFile(file);
-                      }}
-                      className="text-destructive"
-                    >
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteFile(file);
+                    }}
+                    title="Delete file"
+                  >
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </div>
               </TableCell>
             </TableRow>
           ))}
